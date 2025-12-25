@@ -1,12 +1,18 @@
 import json
 import os
-import re
-from datetime import datetime, timezone
+import sys
+from datetime import date, datetime, timezone
+from calendar import monthrange
+
+import requests
 
 RID = os.getenv("ZEN_RID", "362852")
 PAX = int(os.getenv("ZEN_PAX", "2"))
-URL = f"https://bookings.zenchef.com/results?rid={RID}"
+MONTHS_AHEAD = int(os.getenv("ZEN_MONTHS_AHEAD", "3"))  # ex: 3 => mois courant + 2
 DEBUG = os.getenv("DEBUG", "0") == "1"
+
+BASE = "https://bookings-middleware.zenchef.com"
+SUMMARY_ENDPOINT = f"{BASE}/getAvailabilitiesSummary"
 
 
 def write_output(name: str, value: str) -> None:
@@ -17,166 +23,155 @@ def write_output(name: str, value: str) -> None:
         f.write(f"{name}={value}\n")
 
 
-def extract_next_data_from_html(html: str) -> dict:
-    m = re.search(
-        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-        html,
-        re.S,
-    )
-    if not m:
-        raise RuntimeError("__NEXT_DATA__ introuvable dans le HTML")
-    return json.loads(m.group(1))
+def month_start(d: date) -> date:
+    return date(d.year, d.month, 1)
 
 
-def safe_keys(obj) -> list:
-    return sorted(list(obj.keys())) if isinstance(obj, dict) else []
+def add_months(d: date, months: int) -> date:
+    y = d.year + (d.month - 1 + months) // 12
+    m = (d.month - 1 + months) % 12 + 1
+    day = min(d.day, monthrange(y, m)[1])
+    return date(y, m, day)
 
 
-def get_initial_state(next_data: dict) -> dict:
-    return (
-        next_data.get("props", {})
-        .get("pageProps", {})
-        .get("initialState", {})
-    )
+def month_end(d: date) -> date:
+    last = monthrange(d.year, d.month)[1]
+    return date(d.year, d.month, last)
 
 
-def get_app_state(initial_state: dict) -> dict:
-    app = initial_state.get("appStoreState", {})
-    if isinstance(app, dict) and "dailyAvailabilities" in app:
-        return app
-    app2 = app.get("appStoreState", {}) if isinstance(app, dict) else {}
-    if isinstance(app2, dict) and "dailyAvailabilities" in app2:
-        return app2
-    return app if isinstance(app, dict) else {}
+def fetch_month_summary(session: requests.Session, restaurant_id: str, d: date) -> list:
+    begin = month_start(d).isoformat()
+    end = month_end(d).isoformat()
 
-
-def summarize_shifts(app_state: dict) -> dict:
-    daily = app_state.get("dailyAvailabilities", {}) or {}
-
-    days_with_shifts = []
-    total_shifts = 0
-
-    for day, payload in daily.items():
-        shifts = (payload or {}).get("shifts", [])
-        if isinstance(shifts, list) and len(shifts) > 0:
-            days_with_shifts.append(day)
-            total_shifts += len(shifts)
-
-    return {
-        "days_seen": len(daily),
-        "days_with_shifts": days_with_shifts,
-        "total_shifts": total_shifts,
-        "sample_daily_keys": list(daily.keys())[:5],
+    params = {
+        "restaurantId": restaurant_id,
+        "date_begin": begin,
+        "date_end": end,
     }
+
+    # On reproduit les headers essentiels du navigateur (Origin/Referer/UA),
+    # c’est souvent ce qui fait la différence sur des endpoints protégés. [attached_file:1]
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "origin": "https://bookings.zenchef.com",
+        "referer": "https://bookings.zenchef.com/",
+        "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+    }
+
+    r = session.get(SUMMARY_ENDPOINT, params=params, headers=headers, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected JSON type from summary: {type(data)}")
+
+    return data
+
+
+def day_has_pax(day_obj: dict, pax: int) -> bool:
+    # Exemple que tu as fourni : isOpen + shifts[] + possible_guests[] [attached_file:1]
+    if not isinstance(day_obj, dict):
+        return False
+
+    shifts = day_obj.get("shifts", [])
+    if not isinstance(shifts, list) or len(shifts) == 0:
+        return False
+
+    for s in shifts:
+        if not isinstance(s, dict):
+            continue
+        possible = s.get("possible_guests", [])
+        # Certains shifts peuvent avoir possible_guests=[] mais d'autres OK (cf ton exemple). [attached_file:1]
+        if isinstance(possible, list) and pax in possible:
+            return True
+
+    return False
 
 
 def main() -> int:
     now = datetime.now(timezone.utc).isoformat()
-    print(f"[{now}] Checking {URL} for pax={PAX} DEBUG={int(DEBUG)}")
+    print(f"[{now}] Checking middleware {SUMMARY_ENDPOINT} for restaurantId={RID}, pax={PAX}, months_ahead={MONTHS_AHEAD}, DEBUG={int(DEBUG)}")
 
-    status = "UNKNOWN"  # AVAILABLE / NOT_AVAILABLE / UNKNOWN
+    debug = {
+        "restaurantId": RID,
+        "pax": PAX,
+        "months_ahead": MONTHS_AHEAD,
+        "months_checked": [],
+        "days_total": 0,
+        "days_open": 0,
+        "days_with_shifts": 0,
+        "days_with_pax": [],
+        "sample_open_days": [],
+    }
+
+    status = "UNKNOWN"
     reason = ""
     details = {}
 
-    debug_info = {
-        "url": URL,
-        "pax": PAX,
-        "final_url": None,
-        "main_response_status": None,
-        "has_next_data_js": False,
-        "has_next_data_html": False,
-        "initial_state_keys": [],
-        "app_state_keys": [],
-        "dailyAvailabilities_present": False,
-    }
-
     try:
-        from playwright.sync_api import sync_playwright
+        session = requests.Session()
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+        start = month_start(date.today())
+        months = [add_months(start, i) for i in range(max(1, MONTHS_AHEAD))]
 
-            main_response = page.goto(URL, wait_until="domcontentloaded", timeout=90_000)
-            debug_info["final_url"] = page.url
-            if main_response:
-                debug_info["main_response_status"] = main_response.status
+        days_with_pax = []
 
-            # On attend un peu que Next hydrate / pose __NEXT_DATA__ global
-            try:
-                page.wait_for_function("() => typeof window.__NEXT_DATA__ !== 'undefined'", timeout=15_000)
-            except Exception:
-                pass
+        for m in months:
+            ym = f"{m.year:04d}-{m.month:02d}"
+            debug["months_checked"].append(ym)
 
-            next_data = None
+            data = fetch_month_summary(session, RID, m)
+            debug["days_total"] += len(data)
 
-            # 1) Tenter via JS (le plus fiable quand la page est réellement exécutée)
-            try:
-                next_data = page.evaluate("() => window.__NEXT_DATA__")
-                debug_info["has_next_data_js"] = isinstance(next_data, dict)
-            except Exception:
-                next_data = None
+            for d in data:
+                is_open = bool(d.get("isOpen"))
+                shifts = d.get("shifts", [])
+                has_shifts = isinstance(shifts, list) and len(shifts) > 0
 
-            # 2) Fallback via HTML
-            html = page.content()
-            debug_info["has_next_data_html"] = ('id="__NEXT_DATA__"' in html)
+                if is_open:
+                    debug["days_open"] += 1
+                    if len(debug["sample_open_days"]) < 5:
+                        debug["sample_open_days"].append(d.get("date"))
 
-            if not isinstance(next_data, dict):
-                next_data = extract_next_data_from_html(html)
+                if has_shifts:
+                    debug["days_with_shifts"] += 1
 
-            browser.close()
+                if day_has_pax(d, PAX):
+                    days_with_pax.append(d.get("date"))
 
-        initial_state = get_initial_state(next_data)
-        app_state = get_app_state(initial_state)
+        debug["days_with_pax"] = days_with_pax[:30]  # on limite la taille
+        details = {
+            "days_with_pax_count": len(days_with_pax),
+            "days_with_pax_sample": days_with_pax[:10],
+            "months_checked": debug["months_checked"],
+        }
 
-        debug_info["initial_state_keys"] = safe_keys(initial_state)
-        debug_info["app_state_keys"] = safe_keys(app_state)
-        debug_info["dailyAvailabilities_present"] = (
-            isinstance(app_state, dict) and "dailyAvailabilities" in app_state
-        )
-
-        if not debug_info["dailyAvailabilities_present"]:
-            status = "UNKNOWN"
-            reason = "dailyAvailabilities absent (payload différent / challenge possible)"
-            details = {
-                "days_seen": 0,
-                "days_with_shifts": [],
-                "total_shifts": 0,
-            }
+        if len(days_with_pax) > 0:
+            status = "AVAILABLE"
+            reason = f"Found at least one open shift that accepts pax={PAX}."
         else:
-            details = summarize_shifts(app_state)
-            if details["total_shifts"] > 0:
-                status = "AVAILABLE"
-                reason = f"Found shifts on {len(details['days_with_shifts'])} day(s)."
-            else:
-                status = "NOT_AVAILABLE"
-                reason = f"No shifts found (days seen: {details['days_seen']})."
+            status = "NOT_AVAILABLE"
+            reason = f"No shifts accept pax={PAX} in checked months."
 
     except Exception as e:
         status = "UNKNOWN"
         reason = f"{type(e).__name__}: {e}"
-        details = {
-            "days_seen": 0,
-            "days_with_shifts": [],
-            "total_shifts": 0,
-        }
+        details = {}
 
-    # Outputs pour le workflow
     write_output("status", status)
     write_output("available", "1" if status == "AVAILABLE" else "0")
     write_output("reason", reason)
     write_output("details_json", json.dumps(details, ensure_ascii=False))
-    write_output("debug_json", json.dumps(debug_info, ensure_ascii=False))
+    write_output("debug_json", json.dumps(debug, ensure_ascii=False))
 
-    # Logs
     print(f"STATUS={status}")
     print(f"REASON={reason}")
     print(f"DETAILS={details}")
     if DEBUG:
-        print(f"DEBUG={debug_info}")
+        print(f"DEBUG={debug}")
 
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
