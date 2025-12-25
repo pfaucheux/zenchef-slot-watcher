@@ -8,7 +8,7 @@ import requests
 
 RID = os.getenv("ZEN_RID", "362852")
 PAX = int(os.getenv("ZEN_PAX", "2"))
-MONTHS_AHEAD = int(os.getenv("ZEN_MONTHS_AHEAD", "3"))  # ex: 3 => mois courant + 2
+MONTHS_AHEAD = int(os.getenv("ZEN_MONTHS_AHEAD", "3"))
 DEBUG = os.getenv("DEBUG", "0") == "1"
 
 BASE = "https://bookings-middleware.zenchef.com"
@@ -49,8 +49,6 @@ def fetch_month_summary(session: requests.Session, restaurant_id: str, d: date) 
         "date_end": end,
     }
 
-    # On reproduit les headers essentiels du navigateur (Origin/Referer/UA),
-    # c’est souvent ce qui fait la différence sur des endpoints protégés. [attached_file:1]
     headers = {
         "accept": "application/json, text/plain, */*",
         "origin": "https://bookings.zenchef.com",
@@ -69,7 +67,6 @@ def fetch_month_summary(session: requests.Session, restaurant_id: str, d: date) 
 
 
 def day_has_pax(day_obj: dict, pax: int) -> bool:
-    # Exemple que tu as fourni : isOpen + shifts[] + possible_guests[] [attached_file:1]
     if not isinstance(day_obj, dict):
         return False
 
@@ -81,7 +78,6 @@ def day_has_pax(day_obj: dict, pax: int) -> bool:
         if not isinstance(s, dict):
             continue
         possible = s.get("possible_guests", [])
-        # Certains shifts peuvent avoir possible_guests=[] mais d'autres OK (cf ton exemple). [attached_file:1]
         if isinstance(possible, list) and pax in possible:
             return True
 
@@ -90,7 +86,10 @@ def day_has_pax(day_obj: dict, pax: int) -> bool:
 
 def main() -> int:
     now = datetime.now(timezone.utc).isoformat()
-    print(f"[{now}] Checking middleware {SUMMARY_ENDPOINT} for restaurantId={RID}, pax={PAX}, months_ahead={MONTHS_AHEAD}, DEBUG={int(DEBUG)}")
+    print(
+        f"[{now}] Checking middleware {SUMMARY_ENDPOINT} for restaurantId={RID}, "
+        f"pax={PAX}, months_ahead={MONTHS_AHEAD}, DEBUG={int(DEBUG)}"
+    )
 
     debug = {
         "restaurantId": RID,
@@ -139,7 +138,7 @@ def main() -> int:
                 if day_has_pax(d, PAX):
                     days_with_pax.append(d.get("date"))
 
-        debug["days_with_pax"] = days_with_pax[:30]  # on limite la taille
+        debug["days_with_pax"] = days_with_pax[:30]
         details = {
             "days_with_pax_count": len(days_with_pax),
             "days_with_pax_sample": days_with_pax[:10],
