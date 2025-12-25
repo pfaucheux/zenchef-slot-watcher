@@ -47,42 +47,73 @@ jobs:
       - name: Run check
         id: check
         env:
-          # Si schedule => inputs vides => fallback [web:161]
           ZEN_RID: ${{ inputs.restaurant_id || '362852' }}
           ZEN_PAX: ${{ inputs.pax || '2' }}
           ZEN_MONTHS_AHEAD: ${{ inputs.months_ahead || '4' }}
-          DEBUG: "1"
+          DEBUG: "0"
         run: |
           python check_zenchef.py
 
       - name: Job summary
         if: always()
         run: |
-          echo "## Zenchef watcher result" >> $GITHUB_STEP_SUMMARY
+          echo "## Résultat Zenchef" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- RestaurantId: ${{ inputs.restaurant_id || '362852' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Pax: ${{ inputs.pax || '2' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Months ahead: ${{ inputs.months_ahead || '4' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Status: **${{ steps.check.outputs.status }}**" >> $GITHUB_STEP_SUMMARY
-          echo "- Reason: ${{ steps.check.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "- RestaurantId : ${{ inputs.restaurant_id || '362852' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Couverts : ${{ inputs.pax || '2' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Mois scannés : ${{ inputs.months_ahead || '4' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Statut : **${{ steps.check.outputs.status }}**" >> $GITHUB_STEP_SUMMARY
+          echo "- Raison : ${{ steps.check.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Details" >> $GITHUB_STEP_SUMMARY
+          echo "### Détails" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
           echo '${{ steps.check.outputs.details_json }}' >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Debug" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
-          echo '${{ steps.check.outputs.debug_json }}' >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-      - name: Create issue if available
+      - name: Create issue if available (FR)
         if: steps.check.outputs.available == '1'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RID: ${{ inputs.restaurant_id || '362852' }}
+          PAX: ${{ inputs.pax || '2' }}
+          MONTHS: ${{ inputs.months_ahead || '4' }}
+          REASON: ${{ steps.check.outputs.reason }}
+          DETAILS_JSON: ${{ steps.check.outputs.details_json }}
         run: |
+          # Body en Markdown (lisible, FR). [web:108]
+          BODY=$(cat <<'EOF'
+          ## Créneau potentiel détecté
+
+          - RestaurantId : **__RID__**
+          - Nombre de couverts : **__PAX__**
+          - Fenêtre analysée : **__MONTHS__** mois
+          - Raison : __REASON__
+
+          ### Détails (JSON)
+          ```
+          __DETAILS_JSON__
+          ```
+
+          ### Liens utiles
+          - Page Zenchef : https://bookings.zenchef.com/results?rid=__RID__
+          EOF
+          )
+
+          BODY="${BODY/__RID__/$RID}"
+          BODY="${BODY/__PAX__/$PAX}"
+          BODY="${BODY/__MONTHS__/$MONTHS}"
+          BODY="${BODY/__REASON__/$REASON}"
+          BODY="${BODY/__DETAILS_JSON__/$DETAILS_JSON}"
+
+          # Échappement pour JSON (guillemets + retours ligne)
+          BODY_JSON=$(python - <<'PY'
+          import json, os
+          print(json.dumps(os.environ["BODY"]))
+          PY
+          )
+
           curl -sS -X POST \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
             https://api.github.com/repos/${{ github.repository }}/issues \
-            -d "{\"title\":\"Zenchef: créneau détecté (rid=${{ inputs.restaurant_id || '362852' }})\",\"body\":\"rid=${{ inputs.restaurant_id || '362852' }}\\nPax=${{ inputs.pax || '2' }}\\nReason=${{ steps.check.outputs.reason }}\\nDetails=${{ steps.check.outputs.details_json }}\"}"
+            -d "{\"title\":\"Zenchef : créneau détecté (rid=$RID)\",\"body\":${BODY_JSON}}"
