@@ -9,10 +9,6 @@ URL = f"https://bookings.zenchef.com/results?rid={RID}"
 
 
 def write_output(name: str, value: str) -> None:
-    """
-    Ecrit un output GitHub Actions (si on est dans Actions).
-    En local, GITHUB_OUTPUT est généralement absent => on ne fait rien.
-    """
     path = os.getenv("GITHUB_OUTPUT")
     if not path:
         return
@@ -27,15 +23,11 @@ def extract_next_data(html: str) -> dict:
         re.S,
     )
     if not m:
-        raise RuntimeError("__NEXT_DATA__ introuvable (page non rendue ou challenge)")
+        raise RuntimeError("__NEXT_DATA__ introuvable (page non rendue / challenge possible)")
     return json.loads(m.group(1))
 
 
-def has_any_shift(next_data: dict) -> bool:
-    """
-    Inspecte initialState.appStoreState.dailyAvailabilities[*].shifts
-    et renvoie True si au moins un jour a une liste de shifts non vide.
-    """
+def summarize_shifts(next_data: dict) -> dict:
     state = (
         next_data.get("props", {})
         .get("pageProps", {})
@@ -44,16 +36,31 @@ def has_any_shift(next_data: dict) -> bool:
     )
     daily = state.get("dailyAvailabilities", {}) or {}
 
-    for _, payload in daily.items():
+    days_with_shifts = []
+    total_shifts = 0
+
+    for day, payload in daily.items():
         shifts = (payload or {}).get("shifts", [])
-        if isinstance(shifts, list) and len(shifts) > 0:
-            return True
-    return False
+        if isinstance(shifts, list):
+            if len(shifts) > 0:
+                days_with_shifts.append(day)
+                total_shifts += len(shifts)
+
+    return {
+        "days_seen": len(daily),
+        "days_with_shifts": days_with_shifts,
+        "total_shifts": total_shifts,
+    }
 
 
 def main() -> int:
     now = datetime.now(timezone.utc).isoformat()
     print(f"[{now}] Checking {URL} for pax={PAX}")
+
+    # Valeurs par défaut (UNKNOWN)
+    status = "UNKNOWN"  # AVAILABLE / NOT_AVAILABLE / UNKNOWN
+    reason = ""
+    details = {}
 
     try:
         from playwright.sync_api import sync_playwright
@@ -66,24 +73,37 @@ def main() -> int:
             browser.close()
 
         next_data = extract_next_data(html)
-        available = has_any_shift(next_data)
+        details = summarize_shifts(next_data)
 
-        if available:
-            print("AVAILABLE=1 Found at least one shift in dailyAvailabilities")
-            write_output("available", "1")
+        if details["total_shifts"] > 0:
+            status = "AVAILABLE"
+            reason = f"Found shifts on {len(details['days_with_shifts'])} day(s)."
         else:
-            print("AVAILABLE=0 No shift found in dailyAvailabilities")
-            write_output("available", "0")
-
-        return 0
+            status = "NOT_AVAILABLE"
+            reason = f"No shifts found (days seen: {details['days_seen']})."
 
     except Exception as e:
-        # Important: ne pas faire échouer le job Actions,
-        # sinon "Create issue if available" est skipped.
-        print(f"ERROR: {type(e).__name__}: {e}")
-        print("AVAILABLE=0 (forced because of error)")
-        write_output("available", "0")
-        return 0
+        status = "UNKNOWN"
+        reason = f"{type(e).__name__}: {e}"
+
+    # Outputs pour le workflow
+    write_output("status", status)
+    write_output("available", "1" if status == "AVAILABLE" else "0")
+    write_output("reason", reason)
+
+    # Détails (JSON compact) pour debug dans la summary
+    try:
+        write_output("details_json", json.dumps(details, ensure_ascii=False))
+    except Exception:
+        write_output("details_json", "{}")
+
+    # Logs lisibles
+    print(f"STATUS={status}")
+    print(f"REASON={reason}")
+    print(f"DETAILS={details}")
+
+    # On ne casse pas le workflow: succès technique
+    return 0
 
 
 if __name__ == "__main__":
