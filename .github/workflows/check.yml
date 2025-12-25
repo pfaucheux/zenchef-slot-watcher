@@ -1,36 +1,54 @@
 name: Zenchef slot watcher
-permissions:
-  issues: write
 
 on:
   schedule:
-    - cron: "*/15 * * * *"  # toutes les 15 minutes (UTC)
+    - cron: "*/15 * * * *"  # toutes les 15 minutes (UTC) [web:32]
   workflow_dispatch:
+
+# Nécessaire pour créer une issue via l'API GitHub avec le token auto GITHUB_TOKEN [web:95]
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Installation du navigateur + dépendances système dans le runner [web:68]
       - name: Install Playwright browsers
         run: |
           python -m playwright install --with-deps chromium
-        # Playwright documente l'installation conjointe navigateurs + dépendances via --with-deps. [web:68]
 
       - name: Run check
+        id: check
         env:
           ZEN_RID: "362852"
           ZEN_PAX: "2"
         run: |
           python check_zenchef.py
+
+      - name: Create issue if available
+        if: steps.check.outputs.available == '1'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/${{ github.repository }}/issues \
+            -d "{\"title\":\"Zenchef: créneau détecté\",\"body\":\"Un shift semble disponible pour rid=362852 (2 pax). Va vérifier: https://bookings.zenchef.com/results?rid=
