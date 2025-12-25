@@ -2,10 +2,10 @@ name: Zenchef slot watcher
 
 on:
   schedule:
-    - cron: "*/15 * * * *"  # toutes les 15 minutes (UTC) [web:32]
+    - cron: "*/15 * * * *" # toutes les 15 minutes (UTC) [web:167]
   workflow_dispatch:
 
-# Nécessaire pour créer une issue via l'API GitHub avec le token auto GITHUB_TOKEN [web:95]
+# Nécessaire pour créer une issue via l'API GitHub avec GITHUB_TOKEN [web:95]
 permissions:
   contents: read
   issues: write
@@ -29,7 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Installation du navigateur + dépendances système dans le runner [web:68]
+      # Installation du navigateur + dépendances système [web:134]
       - name: Install Playwright browsers
         run: |
           python -m playwright install --with-deps chromium
@@ -42,6 +42,22 @@ jobs:
         run: |
           python check_zenchef.py
 
+      # Résumé lisible directement dans l'UI GitHub Actions [web:134]
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## Zenchef watcher result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- URL: https://bookings.zenchef.com/results?rid=362852" >> $GITHUB_STEP_SUMMARY
+          echo "- Pax: 2" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: **${{ steps.check.outputs.status }}**" >> $GITHUB_STEP_SUMMARY
+          echo "- Reason: ${{ steps.check.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Details (raw)" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.check.outputs.details_json }}' >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
       - name: Create issue if available
         if: steps.check.outputs.available == '1'
         env:
@@ -51,4 +67,4 @@ jobs:
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
             https://api.github.com/repos/${{ github.repository }}/issues \
-            -d "{\"title\":\"Zenchef: créneau détecté\",\"body\":\"Un shift semble disponible pour rid=362852 (2 pax). Va vérifier: https://bookings.zenchef.com/results?rid=
+            -d "{\"title\":\"Zenchef: créneau détecté\",\"body\":\"Status=${{ steps.check.outputs.status }}\\nReason=${{ steps.check.outputs.reason }}\\nDetails=${{ steps.check.outputs.details_json }}\\n\\nVa vérifier: https://bookings.zenchef.com/results?rid=362852\"}"
