@@ -1,4 +1,6 @@
 name: Zenchef slot watcher
+permissions:
+  issues: write
 
 on:
   schedule:
