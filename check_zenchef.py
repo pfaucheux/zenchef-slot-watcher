@@ -40,13 +40,15 @@ def main():
     next_data = extract_next_data(html)
     available = has_any_shift(next_data)
 
-    if available:
-        # GitHub Actions: ce log suffit pour déclencher une alerte via “workflow failure” ou issue/notification ensuite.
+        if available:
         print("AVAILABLE=1 Found at least one shift in dailyAvailabilities")
-        # Option: faire échouer le job pour attirer l’attention
-        raise SystemExit(2)
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            f.write("available=1\n")
     else:
         print("AVAILABLE=0 No shift found in dailyAvailabilities")
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            f.write("available=0\n")
+
 
 if __name__ == "__main__":
     main()
