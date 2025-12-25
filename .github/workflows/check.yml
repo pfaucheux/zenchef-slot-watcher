@@ -4,6 +4,22 @@ on:
   schedule:
     - cron: "*/15 * * * *" # toutes les 15 minutes (UTC) [web:167]
   workflow_dispatch:
+    inputs:
+      restaurant_id:
+        description: "Zenchef restaurantId (ex: 362852, 357186)"
+        required: false
+        default: "362852"
+        type: string
+      pax:
+        description: "Nombre de couverts"
+        required: false
+        default: "2"
+        type: string
+      months_ahead:
+        description: "Nombre de mois à scanner (à partir du mois courant)"
+        required: false
+        default: "4"
+        type: string
 
 permissions:
   contents: read
@@ -31,9 +47,10 @@ jobs:
       - name: Run check
         id: check
         env:
-          ZEN_RID: "362852"
-          ZEN_PAX: "2"
-          ZEN_MONTHS_AHEAD: "4"
+          # Si schedule => inputs vides => fallback [web:161]
+          ZEN_RID: ${{ inputs.restaurant_id || '362852' }}
+          ZEN_PAX: ${{ inputs.pax || '2' }}
+          ZEN_MONTHS_AHEAD: ${{ inputs.months_ahead || '4' }}
           DEBUG: "1"
         run: |
           python check_zenchef.py
@@ -43,8 +60,9 @@ jobs:
         run: |
           echo "## Zenchef watcher result" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- RestaurantId: 362852" >> $GITHUB_STEP_SUMMARY
-          echo "- Pax: 2" >> $GITHUB_STEP_SUMMARY
+          echo "- RestaurantId: ${{ inputs.restaurant_id || '362852' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Pax: ${{ inputs.pax || '2' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Months ahead: ${{ inputs.months_ahead || '4' }}" >> $GITHUB_STEP_SUMMARY
           echo "- Status: **${{ steps.check.outputs.status }}**" >> $GITHUB_STEP_SUMMARY
           echo "- Reason: ${{ steps.check.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -67,4 +85,4 @@ jobs:
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Content-Type: application/json" \
             https://api.github.com/repos/${{ github.repository }}/issues \
-            -d "{\"title\":\"Zenchef: créneau détecté\",\"body\":\"Pax=2\\nReason=${{ steps.check.outputs.reason }}\\nDetails=${{ steps.check.outputs.details_json }}\\n\\nVa vérifier: https://bookings.zenchef.com/results?rid=362852\"}"
+            -d "{\"title\":\"Zenchef: créneau détecté (rid=${{ inputs.restaurant_id || '362852' }})\",\"body\":\"rid=${{ inputs.restaurant_id || '362852' }}\\nPax=${{ inputs.pax || '2' }}\\nReason=${{ steps.check.outputs.reason }}\\nDetails=${{ steps.check.outputs.details_json }}\"}"
