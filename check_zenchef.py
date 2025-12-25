@@ -147,10 +147,10 @@ def main() -> int:
 
         if len(days_with_pax) > 0:
             status = "AVAILABLE"
-            reason = f"Found at least one open shift that accepts pax={PAX}."
+            reason = f"Au moins un shift accepte {PAX} couvert(s)."
         else:
             status = "NOT_AVAILABLE"
-            reason = f"No shifts accept pax={PAX} in checked months."
+            reason = f"Aucun shift n’accepte {PAX} couvert(s) sur la période."
 
     except Exception as e:
         status = "UNKNOWN"
